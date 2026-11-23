@@ -134,24 +134,15 @@ time without accounting for shared setup and preparation costs.
 
 ## GitHub Pages
 
-The site uses GitHub Pages' **Deploy from a branch** mode, serving the root of
-`gh-pages`. Source lives on `main`. To publish an update, commit your changes,
-push `main`, then run:
+The included `.github/workflows/pages.yml` builds and deploys `dist/` on pushes to
+`main`, or on manual dispatch. Set **Settings > Pages > Build and deployment >
+Source** to **GitHub Actions**. All app, worker, model, runtime and sample paths
+are relative, including deployment below `/segmentation-benchmark/`.
 
-```bash
-npm run deploy
-```
-
-This requires a GitHub CLI login (`gh auth login`) with repository write and
-Pages administration access. The script builds the static files, commits only
-`dist/` contents to `gh-pages` using a temporary Git index, pushes that branch,
-and configures Pages. The source checkout stays on its current branch. It does
-not require the OAuth `workflow` scope. All app, worker, model, runtime and
-sample paths are relative, including deployment below `/segmentation-benchmark/`.
-
-An optional Actions template is in `deployment/pages-workflow.yml`. To use it,
-copy it into `.github/workflows/` with a login authorized to write workflows,
-and switch the Pages source to GitHub Actions.
+After pushing source changes, deployment starts automatically. `npm run deploy`
+can also trigger the workflow using an existing GitHub CLI login. The login used
+to push workflow changes needs GitHub's `workflow` OAuth scope; repository write
+permission and enabling Actions in Settings do not grant that token scope.
 
 The ONNX model is about 48.2 MiB and is tracked as an ordinary file. `dist/`,
 `node_modules/`, generated tests and the local sibling symlink are ignored.
