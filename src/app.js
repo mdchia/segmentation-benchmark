@@ -26,6 +26,7 @@ async function checkGpu() {
   $('backend').querySelector('[value="webgpu"]').disabled=!available;
   if(!available) $('backend').value='wasm';
   $('capability').textContent=available ? 'WebGPU adapter detected. CPU is also available (one WebAssembly thread).' : 'No WebGPU adapter detected. CPU processing is available (one WebAssembly thread).';
+  $('webgpu-guidance').hidden=available;
 }
 checkGpu();
 
