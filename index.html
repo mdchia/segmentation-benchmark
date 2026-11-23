@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Full-resolution, client-side root segmentation and benchmarking with WebGPU or CPU.">
+  <title>Root segmentation benchmark</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./src/app.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>Root segmentation benchmark</h1><p>Root Foundation Model · full-resolution inference in your browser</p></div>
+      <label class="theme">Theme <select id="theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    </header>
+
+    <section aria-labelledby="setup-heading">
+      <h2 id="setup-heading">Process images</h2>
+      <p class="muted">Images stay on this device. The model runs on 1024 × 1024 tiles without resizing your image.</p>
+      <div class="settings">
+        <label>Processing device <select id="backend"><option value="webgpu">WebGPU</option><option value="wasm">CPU (WebAssembly)</option></select></label>
+        <div class="model-info">Model <strong>RootFM · FP32</strong><span>48.2 MiB · downloaded once and cached when available</span></div>
+      </div>
+      <p id="capability" class="note" role="status">Checking device support…</p>
+      <div id="drop-zone" class="drop-zone">
+        <label class="file-label" for="files">Choose images</label>
+        <input id="files" type="file" accept="image/*" multiple>
+        <span>or drop multiple files here</span>
+        <button id="samples" type="button" class="secondary">Add 8 test images</button>
+      </div>
+      <p class="small muted">Test images load on demand (about 148 MiB for all eight). JPEG, PNG, WebP and other browser-decodable formats.</p>
+      <div class="actions"><button id="run" disabled>Process batch</button><button id="cancel" class="secondary" hidden>Cancel</button><button id="clear" class="secondary" disabled>Clear list</button><span id="queue-count" class="muted">No images added</span></div>
+    </section>
+
+    <section id="progress-section" aria-labelledby="progress-heading" hidden>
+      <div class="section-title"><h2 id="progress-heading">Batch progress</h2><span id="elapsed" class="mono">0.0 s</span></div>
+      <p id="status" role="status" aria-live="polite">Ready</p>
+      <progress id="progress" max="1" value="0" aria-label="Batch processing progress"></progress>
+      <div class="progress-label"><span id="progress-detail">Preparing…</span><span id="percentage" class="mono">0%</span></div>
+      <p class="small muted">Previews are hidden during processing. The first tile includes shader compilation and other first-run costs.</p>
+    </section>
+
+    <section id="summary-section" aria-labelledby="summary-heading" hidden>
+      <div class="section-title"><h2 id="summary-heading">Batch statistics</h2><div class="summary-actions"><button id="download-all" class="secondary">Download all masks (ZIP)</button><button id="export-stats" class="secondary">Download stats (JSON)</button></div></div>
+      <dl class="stats">
+        <div><dt>Total wall time</dt><dd id="total-time">-</dd></div>
+        <div><dt>Average / image</dt><dd id="image-time">-</dd></div>
+        <div><dt>Average / tile</dt><dd id="tile-time">-</dd></div>
+        <div><dt>Completed</dt><dd id="completed">-</dd></div>
+      </dl>
+      <p id="setup-time" class="small muted"></p>
+      <p id="batch-export-status" class="small muted" role="status" aria-live="polite"></p>
+      <p class="small muted">Total includes file preparation, model setup and processing. Per-image time includes loading, decoding and stitching; per-tile time includes preparation, inference and stitching. PNG downloads are timed separately.</p>
+    </section>
+
+    <section id="queue-section" aria-labelledby="queue-heading" hidden>
+      <h2 id="queue-heading">Images</h2>
+      <div class="table-scroll"><table><thead><tr><th scope="col">Image</th><th scope="col">Dimensions</th><th scope="col">Status</th><th scope="col">Tiles</th><th scope="col">Image time</th><th scope="col">Avg / tile</th><th scope="col">Result</th></tr></thead><tbody id="queue"></tbody></table></div>
+    </section>
+
+    <section id="preview-section" aria-labelledby="preview-heading" hidden>
+      <div class="section-title"><h2 id="preview-heading">Preview</h2><button id="close-preview" class="secondary">Close preview</button></div>
+      <p id="preview-caption" class="small muted"></p>
+      <div class="preview-controls"><label>View <select id="preview-mode"><option value="overlay">Overlay</option><option value="original">Original</option><option value="mask">Mask</option></select></label><label>Overlay opacity <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.65"></label><button id="download-mask" class="secondary">Download full-resolution mask</button></div>
+      <div class="preview-wrap"><canvas id="preview" aria-label="Selected image preview"></canvas></div>
+      <p id="export-status" class="small muted" role="status"></p>
+    </section>
+
+    <footer><p>Downloaded masks show white roots on a black background. No images are uploaded.</p><p>RootFM: <a href="https://www.biorxiv.org/content/10.64898/2026.05.14.725129v2.full" target="_blank" rel="noreferrer">Smith et al. (2026), <cite>A Root Foundation Model for Zero-Shot Segmentation</cite></a>. bioRxiv preprint, version 2. <a href="./models/RootFM.bib" download>Download citation (BibTeX)</a>.</p><details><summary>How processing works</summary><p>The prompt-free MobileSAM model includes ImageNet normalization and logit upsampling. Tiles follow the linked Python reference: EXIF orientation, centered black padding for small images, edge-aligned final tiles, and later tiles replacing overlap. Logits ≥ 0 identify roots. FP32 is used on both backends for consistency.</p><p>CPU uses one WebAssembly thread for compatibility with GitHub Pages. WebGPU requires a working browser GPU adapter; unsupported operators may run through WASM. The app never silently changes your selected backend. Completed masks use one bit per pixel; only one image is decoded at a time. Previews are created only when requested outside processing.</p><p><a href="https://doi.org/10.5281/zenodo.20180274" target="_blank" rel="noreferrer">Model source</a> · <a href="https://github.com/Abe404/RootFoundation" target="_blank" rel="noreferrer">RootFoundation</a> · <a href="./licenses/RootFoundation-MIT.txt">Code license</a></p></details></footer>
+  </main>
+</body>
+</html>

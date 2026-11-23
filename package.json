@@ -1,0 +1,15 @@
+{
+  "name": "root-segmentation-benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/serve.mjs",
+    "deploy": "npm run build && node scripts/deploy-pages.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "node scripts/browser-test.mjs"
+  },
+  "dependencies": { "onnxruntime-web": "1.30.0" },
+  "devDependencies": { "playwright": "1.64.1" }
+}
