@@ -18,6 +18,8 @@ localhost or HTTPS when hosted; opening `index.html` directly will not work.
 `npm run build` creates a self-contained `dist/` directory containing runtime
 binaries, the verified model, and the eight supplied test images. The linked
 sibling project is not required to build or run the app.
+Builds use content-versioned module and stylesheet paths so browser caches
+cannot mix a new page with older app code.
 
 ## Use
 

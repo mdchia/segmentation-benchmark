@@ -9,7 +9,20 @@ const model=new URL('../models/rootfm_fp32.onnx',import.meta.url);
 const digest=createHash('sha256').update(await readFile(model)).digest('hex');
 if(digest!==MODEL_SHA256) throw new Error('Model checksum mismatch. Restore the supplied FP32 ONNX export.');
 await rm(dist,{recursive:true,force:true});await mkdir(dist,{recursive:true});
-for(const path of ['index.html','styles.css','src','licenses','models']) await cp(new URL(`../${path}`,import.meta.url),new URL(path,dist),{recursive:true});
+for(const path of ['licenses','models']) await cp(new URL(`../${path}`,import.meta.url),new URL(path,dist),{recursive:true});
+// Version the whole module directory so imports and workers update together.
+const sourceHash=createHash('sha256');
+for(const name of (await readdir(new URL('../src/',import.meta.url))).sort()) {
+  sourceHash.update(name).update('\0').update(await readFile(new URL(`../src/${name}`,import.meta.url)));
+}
+const sourceDirectory=`src-${sourceHash.digest('hex').slice(0,12)}`;
+const css=await readFile(new URL('../styles.css',import.meta.url));
+const stylesheet=`styles-${createHash('sha256').update(css).digest('hex').slice(0,12)}.css`;
+await cp(new URL('../src/',import.meta.url),new URL(sourceDirectory,dist),{recursive:true});
+await writeFile(new URL(stylesheet,dist),css);
+const html=(await readFile(new URL('../index.html',import.meta.url),'utf8'))
+  .replace('./src/app.js',`./${sourceDirectory}/app.js`).replace('./styles.css',`./${stylesheet}`);
+await writeFile(new URL('index.html',dist),html);
 await mkdir(new URL('vendor/',dist));
 for(const name of ['ort.webgpu.min.mjs',
   'ort-wasm-simd-threaded.jsep.mjs','ort-wasm-simd-threaded.jsep.wasm',
