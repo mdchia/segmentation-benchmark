@@ -9,7 +9,7 @@ const model=new URL('../models/rootfm_fp32.onnx',import.meta.url);
 const digest=createHash('sha256').update(await readFile(model)).digest('hex');
 if(digest!==MODEL_SHA256) throw new Error('Model checksum mismatch. Restore the supplied FP32 ONNX export.');
 await rm(dist,{recursive:true,force:true});await mkdir(dist,{recursive:true});
-for(const path of ['licenses','models']) await cp(new URL(`../${path}`,import.meta.url),new URL(path,dist),{recursive:true});
+for(const path of ['licenses','models','isolation-worker.js']) await cp(new URL(`../${path}`,import.meta.url),new URL(path,dist),{recursive:true});
 // Version the whole module directory so imports and workers update together.
 const sourceHash=createHash('sha256');
 for(const name of (await readdir(new URL('../src/',import.meta.url))).sort()) {

@@ -22,15 +22,17 @@
       <p class="muted">Images stay on this device. The model runs on 1024 × 1024 tiles without resizing your image.</p>
       <div class="settings">
         <label>Processing device <select id="backend"><option value="webgpu">WebGPU</option><option value="wasm">CPU (WebAssembly)</option></select></label>
+        <label>CPU threads <select id="threads" aria-describedby="thread-info" disabled><option value="auto">Auto</option><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="8">8</option></select></label>
         <div class="model-info">Model <strong>RootFM · FP32</strong><span>48.2 MiB · downloaded once and cached when available</span></div>
       </div>
       <p id="capability" class="note" role="status">Checking device support…</p>
+      <p id="thread-info" class="note" role="status">Preparing CPU thread support…</p>
       <p id="webgpu-guidance" class="note" hidden>You may be able to enable WebGPU for your browser: try the system guidance at <a href="https://webgpucheck.com/" target="_blank" rel="noreferrer">WebGPU Check</a>.</p>
       <div id="drop-zone" class="drop-zone">
         <label class="file-label" for="files">Choose images</label>
-        <input id="files" type="file" accept="image/*" multiple>
+        <input id="files" type="file" accept="image/*" multiple disabled>
         <span>or drop multiple files here</span>
-        <button id="samples" type="button" class="secondary">Add 8 test images</button>
+        <button id="samples" type="button" class="secondary" disabled>Add 8 test images</button>
       </div>
       <p class="small muted">Test images load on demand (about 148 MiB for all eight). JPEG, PNG, WebP and other browser-decodable formats.</p>
       <div class="actions"><button id="run" disabled>Process batch</button><button id="cancel" class="secondary" hidden>Cancel</button><button id="clear" class="secondary" disabled>Clear list</button><span id="queue-count" class="muted">No images added</span></div>
@@ -70,7 +72,7 @@
       <p id="export-status" class="small muted" role="status"></p>
     </section>
 
-    <footer><p>Downloaded masks show white roots on a black background. No images are uploaded.</p><p>RootFM: <a href="https://www.biorxiv.org/content/10.64898/2026.05.14.725129v2.full" target="_blank" rel="noreferrer">Smith et al. (2026), <cite>A Root Foundation Model for Zero-Shot Segmentation</cite></a>. bioRxiv preprint, version 2. <a href="./models/RootFM.bib" download>Download citation (BibTeX)</a>.</p><details><summary>How processing works</summary><p>The prompt-free MobileSAM model includes ImageNet normalization and logit upsampling. Tiles follow the linked Python reference: EXIF orientation, centered black padding for small images, edge-aligned final tiles, and later tiles replacing overlap. Logits ≥ 0 identify roots. FP32 is used on both backends for consistency.</p><p>CPU uses one WebAssembly thread for compatibility with GitHub Pages. WebGPU requires a working browser GPU adapter; unsupported operators may run through WASM. The app never silently changes your selected backend. Completed masks use one bit per pixel; only one image is decoded at a time. Previews are created only when requested outside processing.</p><p><a href="https://doi.org/10.5281/zenodo.20180274" target="_blank" rel="noreferrer">Model source</a> · <a href="https://github.com/Abe404/RootFoundation" target="_blank" rel="noreferrer">RootFoundation</a> · <a href="./licenses/RootFoundation-MIT.txt">Code license</a></p></details></footer>
+    <footer><p>Downloaded masks show white roots on a black background. No images are uploaded.</p><p>RootFM: <a href="https://www.biorxiv.org/content/10.64898/2026.05.14.725129v2.full" target="_blank" rel="noreferrer">Smith et al. (2026), <cite>A Root Foundation Model for Zero-Shot Segmentation</cite></a>. bioRxiv preprint, version 2. <a href="./models/RootFM.bib" download>Download citation (BibTeX)</a>.</p><details><summary>How processing works</summary><p>The prompt-free MobileSAM model includes ImageNet normalization and logit upsampling. Tiles follow the linked Python reference: EXIF orientation, centered black padding for small images, edge-aligned final tiles, and later tiles replacing overlap. Logits ≥ 0 identify roots. FP32 is used on both backends for consistency.</p><p>CPU offers Auto, 1, 2, 4 or 8 WebAssembly threads. Auto uses up to four threads; the active count is reported in the stats. Browsers without shared-memory support use one thread. The first visit may reload once to enable CPU threading. WebGPU requires a working browser GPU adapter; unsupported operators may run through WASM. The app never silently changes your selected backend. Completed masks use one bit per pixel; only one image is decoded at a time. Previews are created only when requested outside processing.</p><p><a href="https://doi.org/10.5281/zenodo.20180274" target="_blank" rel="noreferrer">Model source</a> · <a href="https://github.com/Abe404/RootFoundation" target="_blank" rel="noreferrer">RootFoundation</a> · <a href="./licenses/RootFoundation-MIT.txt">Code license</a></p></details></footer>
   </main>
 </body>
 </html>

@@ -1,5 +1,6 @@
 import * as ort from '../vendor/ort.webgpu.min.mjs';
 import { TILE, MODEL_SHA256, planTiles, packedLength, stitchTile, foregroundPixels, timingSummary } from './core.js';
+import { cpuThreadCount, supportsCpuThreads } from './threads.js';
 
 const emit = (type, data = {}, transfer = []) => self.postMessage({ type, ...data }, transfer);
 const now = () => performance.now();
@@ -52,7 +53,7 @@ async function decode(blob) {
   return createImageBitmap(blob, { imageOrientation:'from-image', colorSpaceConversion:'none', premultiplyAlpha:'none' });
 }
 
-async function run({ items, backend }) {
+async function run({ items, backend, threadSetting='auto' }) {
   const started = now();
   if (!self.OffscreenCanvas || !self.createImageBitmap) throw new Error('This browser needs OffscreenCanvas and createImageBitmap support. Try a current Chrome, Edge or Firefox.');
   const prepared = [];
@@ -75,7 +76,8 @@ async function run({ items, backend }) {
   if (!prepared.length) { emit('done', {preflightMs,totalTiles:0,completedTiles:0}); return; }
 
   ort.env.wasm.wasmPaths = new URL('../vendor/', import.meta.url).href;
-  ort.env.wasm.numThreads = 1;
+  const requestedThreads=backend==='wasm'?cpuThreadCount(threadSetting,navigator.hardwareConcurrency):1;
+  ort.env.wasm.numThreads=supportsCpuThreads()?requestedThreads:1;
   ort.env.wasm.proxy = false;
   const setupStart=now();
   let gpu=null;
@@ -97,7 +99,10 @@ async function run({ items, backend }) {
   const modelInfo={sha256:MODEL_SHA256,cacheHit:model.cacheHit,cacheStored:model.cacheStored,bytes:model.loadedBytes};
   model=null;
   const setupMs=now()-setupStart;
-  emit('started', {totalTiles,preflightMs,setupMs,modelLoadMs,sessionInitMs,model:modelInfo,backend,gpu,threads:1});
+  const threads=ort.env.wasm.numThreads;
+  emit('started', {totalTiles,preflightMs,setupMs,modelLoadMs,sessionInitMs,model:modelInfo,backend,gpu,
+    threadSetting,requestedThreads,threads,crossOriginIsolated:Boolean(self.crossOriginIsolated),hardwareConcurrency:navigator.hardwareConcurrency,
+    threadWarning:threads<requestedThreads?`Requested ${requestedThreads} CPU threads; this browser's runtime is using ${threads}.`:null});
   const canvas=new OffscreenCanvas(TILE,TILE);
   const ctx=canvas.getContext('2d',{willReadFrequently:true});
   if (!ctx) throw new Error('Could not allocate the tile canvas.');

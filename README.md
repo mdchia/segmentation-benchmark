@@ -23,7 +23,11 @@ cannot mix a new page with older app code.
 
 ## Use
 
-1. Select WebGPU or CPU. WebGPU is disabled when no adapter is detected.
+1. Select WebGPU or CPU. WebGPU is disabled when no adapter is detected. In CPU
+   mode, the second menu selects **Auto / 1 / 2 / 4 / 8 threads**. Auto uses half
+   the reported logical cores, rounded up and capped at four. Explicit settings
+   are honored even when they exceed the reported core count, so testers can
+   compare throughput. The preference is remembered in this browser.
 2. Choose or drop multiple images, or add the eight bundled test photos.
 3. Process the batch. The table shows each image's dimensions, status, tile
    count, processing time, and mean tile time. Cancel stops the worker
@@ -99,11 +103,20 @@ execute unsupported graph operations on WASM. A failed WebGPU session is
 reported, so the user can explicitly choose CPU. There is no silent backend
 switch or reduced-resolution mode.
 
-CPU uses **one WASM thread**. ONNX Runtime requires cross-origin isolation for
-multithreaded WASM. Standard GitHub Pages does not provide custom COOP/COEP
-response headers, so this proof of concept works without a service worker that
-rewrites headers. For faster CPU work, a future version could add an optional
-isolation service worker or use a host supporting those headers.
+CPU supports **Auto / 1 / 2 / 4 / 8 WASM threads** within one inference session,
+sharing the model and processing images sequentially. WebGPU uses one WASM helper
+thread and disables the CPU thread menu. More threads are not always faster;
+use per-tile and per-image timings to compare settings on each machine.
+
+ONNX Runtime requires cross-origin isolation and shared memory for multiple
+WASM threads. `isolation-worker.js` adds COOP/COEP headers to same-origin app
+responses on GitHub Pages. On the first visit, the page may reload once before
+file input is enabled. This worker does not cache responses or images. Browsers
+that cannot enable threading continue with one thread and disable unsupported
+thread choices. No server configuration or third-party script is required.
+Stats report the selected setting, requested count, initialized runtime count,
+isolation state and reported logical core count. Runtime thread counts describe
+the thread pool; CPU scheduling and utilization remain browser/OS controlled.
 
 The model is stored with the Cache API when storage is available. Cache failure
 does not prevent inference; reloading may download the model again. Uploaded
@@ -165,6 +178,9 @@ logit thresholding, packed mask boundaries, timing summaries and PNG pixel
 convention. Browser checks use the deployed build under a repository subpath,
 exercise multi-file batches with real model inference, and check mask downloads,
 previews, themes, mobile layout, cancellation and recovery from an invalid image.
+They also exercise all five CPU settings with real inference, verify the
+initialized thread count and mask consistency, and check the one-thread fallback
+when service workers are unavailable.
 Artifacts are written to ignored `test-results/`.
 
 Validated on 2026-11-23 with headless Chromium 156 and an NVIDIA Pascal WebGPU

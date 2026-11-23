@@ -14,6 +14,7 @@ button,.file-label { border:1px solid var(--accent); border-radius:5px; color:va
 button.secondary { background:var(--panel); border-color:var(--border); color:var(--text); }
 button:hover,.file-label:hover { filter:brightness(.92); }
 button:disabled { opacity:.45; cursor:default; }
+select:disabled { opacity:.55; cursor:default; }
 button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible,.file-label:focus-within { outline:3px solid var(--accent); outline-offset:3px; }
 select { appearance:none; background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:5px; padding:7px 32px 7px 10px; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='m1 1 5 5 5-5' fill='none' stroke='%237c8999' stroke-width='2'/%3E%3C/svg%3E"); background-position:right 10px center; background-repeat:no-repeat; }
 label { display:flex; align-items:center; gap:10px; font-size:.9rem; }

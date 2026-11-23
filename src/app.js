@@ -1,10 +1,12 @@
 import { maskPixel } from './core.js';
 import { maskPng } from './png.js';
 import { storedZip, uniqueMaskNames } from './zip.js';
+import { cpuThreadCount, prepareCpuThreads } from './threads.js';
 
 const $=id=>document.getElementById(id);
 const queue=[];
 let worker=null, busy=false, exporting=false, batch=null, timer=null, selected=null, previewBitmap=null, previewMask=null, previewVersion=0;
+let booting=true,threadingAvailable=false;
 const seconds=ms=>`${(ms/1000).toFixed(2)} s`;
 const tileSeconds=ms=>`${(ms/1000).toFixed(3)} s`;
 const mib=bytes=>`${(bytes/2**20).toFixed(1)} MiB`;
@@ -25,17 +27,44 @@ async function checkGpu() {
   try { available=Boolean(navigator.gpu && await navigator.gpu.requestAdapter()); } catch { /* CPU is available. */ }
   $('backend').querySelector('[value="webgpu"]').disabled=!available;
   if(!available) $('backend').value='wasm';
-  $('capability').textContent=available ? 'WebGPU adapter detected. CPU is also available (one WebAssembly thread).' : 'No WebGPU adapter detected. CPU processing is available (one WebAssembly thread).';
+  $('capability').textContent=available ? 'WebGPU adapter detected. CPU processing is also available.' : 'No WebGPU adapter detected. CPU processing is available.';
   $('webgpu-guidance').hidden=available;
 }
-checkGpu();
+try {
+  const saved=localStorage.getItem('rootfm-cpu-threads');
+  if(['auto','1','2','4','8'].includes(saved))$('threads').value=saved;
+} catch { /* Use Auto without persistent storage. */ }
+
+function updateThreadControls() {
+  const cpu=$('backend').value==='wasm';
+  $('threads').disabled=booting||busy||exporting||!cpu;
+  for(const option of $('threads').options)option.disabled=!threadingAvailable&&['2','4','8'].includes(option.value);
+  if(booting) {$('thread-info').textContent='Preparing CPU thread support…';return;}
+  if(!threadingAvailable&&['2','4','8'].includes($('threads').value))$('threads').value='1';
+  $('thread-info').textContent=!cpu?'CPU thread settings apply when CPU processing is selected.':threadingAvailable
+    ? `Auto uses ${cpuThreadCount('auto',navigator.hardwareConcurrency)} threads. Choose a count to compare CPU performance.`
+    : 'Multiple CPU threads are unavailable in this browser; using one thread.';
+}
+$('backend').addEventListener('change',updateThreadControls);
+$('threads').addEventListener('change',()=>{
+  try {localStorage.setItem('rootfm-cpu-threads',$('threads').value);} catch { /* The selected setting still applies. */ }
+  updateThreadControls();
+});
+
+async function initialize() {
+  setBusy(false);
+  const [,isolation]=await Promise.all([checkGpu(),prepareCpuThreads()]);
+  if(isolation.reloading)return;
+  threadingAvailable=isolation.available;
+  booting=false;setBusy(false);
+}
 
 function addItem(item) {
   if(queue.some(q=>q.key===item.key)) return;
   queue.push({...item,id:crypto.randomUUID(),state:'Queued',result:null,mask:null,width:item.width||null,height:item.height||null});
 }
 function addFiles(files) {
-  if(busy||exporting) return;
+  if(booting||busy||exporting) return;
   for(const file of files) addItem({name:file.name,file,key:`file:${file.name}:${file.size}:${file.lastModified}`});
   $('files').value=''; renderQueue();
 }
@@ -45,7 +74,7 @@ $('samples').addEventListener('click',async()=>{
     const response=await fetch(new URL('../samples.json',import.meta.url));
     if(!response.ok) throw new Error(`Test manifest could not load (${response.status}).`);
     const samples=await response.json();
-    if(busy||exporting)return;
+    if(booting||busy||exporting)return;
     for(const item of samples) addItem({...item,key:`sample:${item.name}`,url:new URL(item.url,document.baseURI).href});
     renderQueue();
   } catch(e) { showNotice(e.message); }
@@ -83,8 +112,8 @@ function renderQueue() {
   }
   $('queue-section').hidden=!queue.length;
   $('queue-count').textContent=queue.length?`${queue.length} image${queue.length===1?'':'s'}`:'No images added';
-  $('run').disabled=busy||exporting||!queue.length;
-  $('clear').disabled=busy||exporting||!queue.length;
+  $('run').disabled=booting||busy||exporting||!queue.length;
+  $('clear').disabled=booting||busy||exporting||!queue.length;
   $('download-all').disabled=busy||exporting||!queue.some(q=>q.mask);
 }
 function updateRow(item) {
@@ -94,8 +123,9 @@ function updateRow(item) {
 }
 function setBusy(value) {
   busy=value;
-  for(const id of ['files','samples','backend','export-stats']) $(id).disabled=busy||exporting;
+  for(const id of ['files','samples','backend','export-stats']) $(id).disabled=booting||busy||exporting;
   $('cancel').hidden=!value;
+  updateThreadControls();
   renderQueue();
 }
 function showNotice(message) {
@@ -107,10 +137,11 @@ function progress(value,total) {
 }
 
 $('run').addEventListener('click',()=>{
-  if(busy||exporting||!queue.length)return;
+  if(booting||busy||exporting||!queue.length)return;
   clearPreview(); worker?.terminate();
   for(const item of queue) {item.result=null;item.mask=null;item.error=null;item.state='Queued';item.tileProgress=null;}
-  batch={started:performance.now(),startedAt:new Date().toISOString(),backend:$('backend').value,tiles:[],completedTiles:0,totalTiles:0};
+  batch={started:performance.now(),startedAt:new Date().toISOString(),backend:$('backend').value,
+    threadSetting:$('backend').value==='wasm'?$('threads').value:'1',threads:null,tiles:[],completedTiles:0,totalTiles:0};
   $('summary-section').hidden=true;$('progress-section').hidden=false;$('status').classList.remove('error');
   $('batch-export-status').textContent='';
   $('status').textContent='Preparing files…';$('progress-detail').textContent='Reading image dimensions';progress(0,0);
@@ -119,7 +150,7 @@ $('run').addEventListener('click',()=>{
   worker=new Worker(new URL('./worker.js',import.meta.url),{type:'module'});
   worker.onerror=e=>finish('failed',e.message||'The processing worker stopped unexpectedly.');
   worker.onmessage=({data})=>handleMessage(data);
-  worker.postMessage({type:'run',backend:batch.backend,items:queue.map(({id,name,file,url,width,height})=>({id,name,file,url,width,height}))});
+  worker.postMessage({type:'run',backend:batch.backend,threadSetting:batch.threadSetting,items:queue.map(({id,name,file,url,width,height})=>({id,name,file,url,width,height}))});
 });
 
 function handleMessage(data) {
@@ -137,7 +168,9 @@ function handleMessage(data) {
     case 'session-loading':
       $('status').textContent=`Initializing ${modeNames[batch.backend]}…`;$('progress-detail').textContent='Creating inference session';progress(0,0);break;
     case 'started':
-      Object.assign(batch,data);batch.tiles=[];progress(0,data.totalTiles);break;
+      Object.assign(batch,data);batch.tiles=[];progress(0,data.totalTiles);
+      if(data.threadWarning)$('thread-info').textContent=data.threadWarning;
+      break;
     case 'image-start':
       item.state='Processing';updateRow(item);$('status').textContent=`Processing ${item.name}`;
       $('progress-detail').textContent=`${data.completedTiles} / ${data.totalTiles} tiles`;break;
@@ -172,8 +205,10 @@ function finish(outcome,message) {
   $('image-time').textContent=done.length?seconds(done.reduce((s,q)=>s+q.result.imageMs,0)/done.length):'-';
   $('tile-time').textContent=batch.tiles.length?tileSeconds(batch.tiles.reduce((s,t)=>s+t.totalMs,0)/batch.tiles.length):'-';
   $('completed').textContent=`${done.length} / ${queue.length}`;
-  $('setup-time').textContent=`${modeNames[batch.backend]} · FP32 · 1 WASM thread · file preparation ${seconds(batch.preflightMs||0)} · model load ${seconds(batch.modelLoadMs||0)}${batch.model?.cacheHit?' (cached)':''} · session initialization ${seconds(batch.sessionInitMs||0)}`;
+  const threadLabel=batch.threads?`${batch.threads} WASM thread${batch.threads===1?'':'s'}${batch.threadSetting==='auto'?' (Auto)':''}`:'WASM threads not initialized';
+  $('setup-time').textContent=`${modeNames[batch.backend]} · FP32 · ${threadLabel} · file preparation ${seconds(batch.preflightMs||0)} · model load ${seconds(batch.modelLoadMs||0)}${batch.model?.cacheHit?' (cached)':''} · session initialization ${seconds(batch.sessionInitMs||0)}`;
   $('summary-section').hidden=false;setBusy(false);
+  if(batch.threadWarning)$('thread-info').textContent=batch.threadWarning;
 }
 $('cancel').addEventListener('click',()=>finish('cancelled'));
 
@@ -284,3 +319,5 @@ $('download-all').addEventListener('click',async()=>{
   } catch(e) {$('batch-export-status').textContent=`ZIP export failed: ${e.message}`;}
   finally {exporting=false;$('download-mask').disabled=false;setBusy(false);}
 });
+
+initialize();
