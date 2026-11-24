@@ -25,9 +25,12 @@ cannot mix a new page with older app code.
 
 1. Select WebGPU or CPU. WebGPU is disabled when no adapter is detected. In CPU
    mode, the second menu selects **Auto / 1 / 2 / 4 / 8 threads**. Auto uses half
-   the reported logical cores, rounded up and capped at eight. Explicit settings
-   are honored even when they exceed the reported core count, so testers can
-   compare throughput. The preference is remembered in this browser.
+   the reported logical cores, rounded up and capped at eight. With six or more
+   threads, Auto splits them into parallel 2-thread sessions for larger batches
+   (see [CPU sessions](#parallel-cpu-sessions)). Explicit settings always use
+   one session and are honored even when they exceed the reported core count,
+   so testers can compare thread scaling. The preference is remembered in this
+   browser.
 2. Choose or drop multiple images, or add the eight bundled test photos.
 3. Process the batch. The table shows each image's dimensions, status, tile
    count, processing time, and mean tile time. Cancel stops the worker
@@ -121,8 +124,9 @@ adapter rejects graph capture, the worker retries on regular WebGPU. The JSON
 records `gpu.graphCapture` and the fallback reason when one is available.
 Failures of regular WebGPU are reported in the UI.
 
-CPU supports **Auto / 1 / 2 / 4 / 8 WASM threads** within one inference session,
-sharing the model and processing images sequentially. WebGPU uses one WASM helper
+CPU supports **Auto / 1 / 2 / 4 / 8 WASM threads**. Explicit settings use one
+inference session and process tiles sequentially. Auto can instead run several
+2-thread sessions, as described below. WebGPU uses one WASM helper
 thread and disables the CPU thread menu. Use per-tile and per-image timings to
 compare CPU settings on each machine.
 
@@ -133,7 +137,8 @@ file input is enabled. This worker does not cache responses or images. Browsers
 that cannot enable threading continue with one thread and disable unsupported
 thread choices. No server configuration or third-party script is required.
 Stats report the selected setting, requested count, initialized runtime count,
-isolation state and reported logical core count. Runtime thread counts describe
+session count and threads per session, isolation state, reported logical core
+count and reported device memory. Runtime thread counts describe
 the thread pool; CPU scheduling and utilization remain browser/OS controlled.
 
 The model is stored with the Cache API when storage is available. Cache failure
@@ -152,11 +157,15 @@ All durations are measured with `performance.now()` and exported in milliseconds
 | --- | --- |
 | Total wall time | File preparation, model download/cache read and verification, session initialization, all images and worker completion |
 | Per-image time | Image fetch/read, decode, tile preparation, inference/readback, stitching, and foreground counting |
-| Per-tile time | Pixel preparation, inference/readback, and stitching |
+| Per-tile time | Pixel preparation, inference/readback, and stitching. With parallel CPU sessions, also waiting for a session |
 | Inference time | Input tensor binding or upload, `session.run`, and output readback |
 | Export time | PNG encoding and creation of a PNG or batch ZIP download; recorded separately |
 
 The first tile is included in all means. No hidden warmup runs are performed.
+When Auto runs parallel CPU sessions, several tiles are processed at once, so
+the UI's per-tile time is each image's processing time (first tile preparation
+to last stitch) divided by its tiles. JSON records this as `throughputMs` and
+`aggregate.throughputTileMs`, alongside per-tile latency and its `waitMs`.
 JSON also records every tile's coordinates and preparation/inference/stitch
 times, per-image medians/min/max/first/steady median, model load and session
 times, GPU adapter information, cache status, browser identity, errors and
@@ -199,7 +208,9 @@ previews, themes, mobile layout, cancellation and recovery from an invalid image
 They repeat a four-tile WebGPU image in fresh sessions and compare the exported
 PNGs byte for byte. They also exercise all five CPU settings with real inference,
 verify the initialized thread count and byte-for-byte mask parity, and check the
-one-thread fallback when service workers are unavailable.
+one-thread fallback when service workers are unavailable. A 24-tile crop
+checks that parallel Auto sessions produce the same mask as one 8-thread
+session.
 Artifacts are written to ignored `test-results/`.
 
 ### CPU thread scaling
@@ -222,6 +233,46 @@ WASM threads in both builds. The same 48-tile photo produced identical mask PNGs
 in the phone's four- and six-thread runs. Batch time at four threads ranged from
 78 s to 145 s as the phone warmed, so the phone runs establish mask parity and
 thread selection. The laptop runs provide the speed comparison above.
+
+### Parallel CPU sessions
+
+One wide WASM thread pool scales poorly on this graph: doubling from four to
+eight threads cut tile time by only about 28%. Profiling showed no single slow
+operator. Matrix multiplications, convolutions and exact-erf GELUs take most of
+the time, spread across hundreds of nodes, and each node is split across the
+whole pool. With six or more Auto threads, enough tiles (six per session) and
+at least 8 GB of reported device memory (or none reported), Auto runs
+`threads / 2` sessions with two threads each. Each session runs in its own
+nested worker. The batch worker prepares tiles in plan order, hands each to the
+next free session, and stitches results back in plan order, so overlap
+replacement is unchanged. The next image's tiles start while the previous
+image's last tiles finish. If the sessions cannot be created, the batch
+continues with one session using every thread and records `cpuPoolFallback`.
+
+On 2026-11-25, Chromium 156 on the Ryzen 7 250 laptop processed tiles from
+Box053. Throughput by session layout:
+
+| Layout (sessions x threads) | Time per tile |
+| --- | ---: |
+| 1 x 8 (previous Auto) | 647-659 ms |
+| 2 x 4 | 611-640 ms |
+| 2 x 6 | 586-594 ms |
+| 4 x 2 (new Auto) | 575-580 ms |
+
+Pinned to six physical cores, three 2-thread sessions were about 5.5% faster
+than one 6-thread session. On four cores, two 2-thread sessions were only about
+2.5% faster than one 4-thread session, so Auto keeps one session below six
+threads. A 2-thread session takes about 3.5 times as long per tile, so batches
+under six tiles per session also keep one session.
+
+In the full app with the model cached, Box053 (48 tiles) ran in two fresh
+sessions per build in old / new / new / old order. Mean batch time fell from
+**33.28 s to 30.26 s (9.1%)**, mean image time from **31.95 s to 28.54 s
+(10.7%)**, and time per tile from 658 ms to 587 ms. Session initialization grew
+from about 0.52 s to 0.93 s. A three-image batch (144 tiles) fell from 97.45 s
+to 87.09 s (10.6%). All exported masks were byte-identical to the previous
+build. Peak browser memory rose from about 1.1 GiB to 2.2 GiB, because each
+session holds its own weights and activations.
 
 ### WebGPU graph replay and runtime comparison
 

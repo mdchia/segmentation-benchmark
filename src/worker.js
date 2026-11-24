@@ -1,5 +1,6 @@
 import { ORT_VERSION, TILE, MODEL_FILE, MODEL_SHA256, planTiles, packedLength, stitchTile, foregroundPixels, timingSummary } from './core.js';
-import { cpuThreadCount, supportsCpuThreads } from './threads.js';
+import { cpuThreadCount, cpuSessionPlan, supportsCpuThreads } from './threads.js';
+import { createCpuPool } from './cpu-pool.js';
 import { createTileSession } from './tile-session.js';
 
 const emit = (type, data = {}, transfer = []) => self.postMessage({ type, ...data }, transfer);
@@ -76,6 +77,7 @@ async function run({ items, backend, threadSetting='auto' }) {
   if (!prepared.length) { emit('done', {preflightMs,totalTiles:0,completedTiles:0}); return; }
 
   const requestedThreads=backend==='wasm'?cpuThreadCount(threadSetting,navigator.hardwareConcurrency):1;
+  const cpuPlan=backend==='wasm'?cpuSessionPlan(threadSetting,navigator.hardwareConcurrency,navigator.deviceMemory,supportsCpuThreads(),totalTiles):null;
   const setupStart=now();
   let gpu=null;
   let adapter;
@@ -91,27 +93,44 @@ async function run({ items, backend, threadSetting='auto' }) {
   const modelLoadMs=now()-downloadStart;
   emit('session-loading');
   const sessionStart=now();
-  const vendor=new URL(`../vendor-${ORT_VERSION}/`,import.meta.url);
-  let runtimeModule='ort.wasm.min.mjs';
-  if (backend==='webgpu') runtimeModule='Suspending' in WebAssembly?'ort.jspi.min.mjs':'ort.webgpu.min.mjs';
-  const ort=await import(new URL(runtimeModule,vendor).href);
-  ort.env.wasm.wasmPaths=vendor.href;
-  ort.env.wasm.numThreads=supportsCpuThreads()?requestedThreads:1;
-  ort.env.wasm.proxy=false;
-  if(adapter) ort.env.webgpu.adapter=adapter;
-  const session=await createTileSession(ort,model.bytes,backend,async()=>(await loadModel(false)).bytes,error=>{
-    gpu.graphCapture=false;
-    gpu.graphCaptureFallback=errorText(error);
-    emit('gpu-mode',{gpu});
-  });
-  if (gpu) gpu.graphCapture=session.graphCapture;
+  let runner=null, cpuPoolFallback=null;
+  if (cpuPlan?.sessions>1) {
+    try {
+      runner=await createCpuPool(cpuPlan.sessions,cpuPlan.threadsPerSession,model.bytes,
+        ()=>new Worker(new URL('./cpu-worker.js',import.meta.url),{type:'module'}));
+    } catch(e) {
+      // Fewer resources than planned: continue with one session and every thread.
+      cpuPoolFallback=errorText(e);
+    }
+  }
+  let threads;
+  if (runner) threads=runner.threads;
+  else {
+    const vendor=new URL(`../vendor-${ORT_VERSION}/`,import.meta.url);
+    let runtimeModule='ort.wasm.min.mjs';
+    if (backend==='webgpu') runtimeModule='Suspending' in WebAssembly?'ort.jspi.min.mjs':'ort.webgpu.min.mjs';
+    const ort=await import(new URL(runtimeModule,vendor).href);
+    ort.env.wasm.wasmPaths=vendor.href;
+    ort.env.wasm.numThreads=supportsCpuThreads()?requestedThreads:1;
+    ort.env.wasm.proxy=false;
+    if(adapter) ort.env.webgpu.adapter=adapter;
+    const session=await createTileSession(ort,model.bytes,backend,async()=>(await loadModel(false)).bytes,error=>{
+      gpu.graphCapture=false;
+      gpu.graphCaptureFallback=errorText(error);
+      emit('gpu-mode',{gpu});
+    });
+    if (gpu) gpu.graphCapture=session.graphCapture;
+    threads=ort.env.wasm.numThreads;
+    runner={sessions:1,async run(rgba){const start=now();const logits=await session.run(rgba);return {logits,inferenceMs:now()-start};},release:()=>session.release()};
+  }
   const sessionInitMs=now()-sessionStart;
   const modelInfo={sha256:MODEL_SHA256,cacheHit:model.cacheHit,cacheStored:model.cacheStored,bytes:model.loadedBytes};
   model=null;
   const setupMs=now()-setupStart;
-  const threads=ort.env.wasm.numThreads;
+  const sessions=runner.sessions;
   emit('started', {totalTiles,preflightMs,setupMs,modelLoadMs,sessionInitMs,model:modelInfo,backend,gpu,
-    threadSetting,requestedThreads,threads,crossOriginIsolated:Boolean(self.crossOriginIsolated),hardwareConcurrency:navigator.hardwareConcurrency,
+    threadSetting,requestedThreads,threads,sessions,threadsPerSession:threads/sessions,cpuPoolFallback,
+    crossOriginIsolated:Boolean(self.crossOriginIsolated),hardwareConcurrency:navigator.hardwareConcurrency,deviceMemory:navigator.deviceMemory??null,
     threadWarning:threads<requestedThreads?`Requested ${requestedThreads} CPU threads; this browser's runtime is using ${threads}.`:null});
   const canvas=new OffscreenCanvas(TILE,TILE);
   const ctx=canvas.getContext('2d',{willReadFrequently:true});
@@ -119,46 +138,72 @@ async function run({ items, backend, threadSetting='auto' }) {
   // Tile crops use integer coordinates and copy pixels at their original size.
   ctx.imageSmoothingEnabled=false;
   let completedTiles=0;
+  // Tiles are dispatched and stitched in plan order, so later tiles still replace
+  // overlap. With several CPU sessions, the next image's tiles start while the
+  // previous image's last tiles finish.
+  const inFlight=[];
+  const fail=(image,e)=>{
+    if (image.failed) return;
+    image.failed=true;
+    emit('image-error',{id:image.item.id,error:errorText(e),imageMs:now()-image.start});
+  };
+  async function settleOldest() {
+    const job=inFlight.shift();
+    const {image,coord}=job;
+    let output;
+    try { output=await job.result; } catch(e) { fail(image,e); return; }
+    if (image.failed) return;
+    try {
+      const stitchStart=now();
+      stitchTile(image.mask,output.logits,image.item.plan,coord);
+      const end=now();
+      const timing={index:image.tiles.length+1,x:coord.x,y:coord.y,prepMs:job.prepMs,inferenceMs:output.inferenceMs,
+        stitchMs:end-stitchStart,totalMs:end-job.tileStart};
+      if (sessions>1) timing.waitMs=Math.max(0,timing.totalMs-timing.prepMs-timing.inferenceMs-timing.stitchMs);
+      image.tiles.push(timing); completedTiles++;
+      emit('tile', {id:image.item.id,completed:image.tiles.length,count:image.item.plan.coords.length,completedTiles,totalTiles,timing});
+      if (image.tiles.length===image.item.plan.coords.length) {
+        const {item,mask,tiles}=image;
+        const foreground=foregroundPixels(mask);
+        const result={id:item.id,name:item.name,width:item.width,height:item.height,tiles,imageMs:now()-image.start,decodeMs:image.decodeMs,
+          foregroundPixels:foreground,foregroundPercent:100*foreground/(item.width*item.height),
+          timing:{...timingSummary(tiles),throughputMs:(end-image.firstTileStart)/tiles.length}};
+        emit('image-complete',{id:item.id,result,mask:mask.buffer},[mask.buffer]);
+      }
+    } catch(e) { fail(image,e); }
+  }
   try {
     for (const item of prepared) {
       let bitmap;
-      const imageStart=now();
+      const image={item,start:now(),tiles:[],failed:false};
       emit('image-start', {id:item.id,totalTiles,completedTiles});
       try {
         const blob=await getBlob(item);
         const decodeStart=now();
         bitmap=await decode(blob);
-        const decodeMs=now()-decodeStart;
+        image.decodeMs=now()-decodeStart;
         if (bitmap.width!==item.width || bitmap.height!==item.height) throw new Error('Decoded dimensions differ from the tile plan.');
-        const mask=new Uint8Array(packedLength(item.width,item.height));
-        const tiles=[];
+        image.mask=new Uint8Array(packedLength(item.width,item.height));
         for (const coord of item.plan.coords) {
+          if (image.failed) break;
           const tileStart=now();
+          image.firstTileStart??=tileStart;
           ctx.fillStyle='#000'; ctx.fillRect(0,0,TILE,TILE);
           const sx=Math.max(0,coord.x-item.plan.left), sy=Math.max(0,coord.y-item.plan.top);
           const dx=Math.max(0,item.plan.left-coord.x), dy=Math.max(0,item.plan.top-coord.y);
           const w=Math.min(TILE-dx,item.width-sx), h=Math.min(TILE-dy,item.height-sy);
           ctx.drawImage(bitmap,sx,sy,w,h,dx,dy,w,h);
           const rgba=ctx.getImageData(0,0,TILE,TILE).data;
-          const prepMs=now()-tileStart;
-          const inferenceStart=now();
-          const logits=await session.run(new Uint8Array(rgba.buffer,rgba.byteOffset,rgba.byteLength));
-          const inferenceMs=now()-inferenceStart;
-          stitchTile(mask,logits,item.plan,coord);
-          const totalMs=now()-tileStart;
-          const timing={index:tiles.length+1,x:coord.x,y:coord.y,prepMs,inferenceMs,stitchMs:totalMs-prepMs-inferenceMs,totalMs};
-          tiles.push(timing); completedTiles++;
-          emit('tile', {id:item.id,completed:tiles.length,count:item.plan.coords.length,completedTiles,totalTiles,timing});
+          const result=runner.run(new Uint8Array(rgba.buffer,rgba.byteOffset,rgba.byteLength));
+          result.catch(()=>{}); // Handled in tile order by settleOldest.
+          inFlight.push({image,coord,tileStart,prepMs:now()-tileStart,result});
+          if (inFlight.length>=sessions) await settleOldest();
         }
-        const foreground=foregroundPixels(mask);
-        const imageMs=now()-imageStart;
-        const result={id:item.id,name:item.name,width:item.width,height:item.height,tiles,imageMs,decodeMs,
-          foregroundPixels:foreground,foregroundPercent:100*foreground/(item.width*item.height),timing:timingSummary(tiles)};
-        emit('image-complete',{id:item.id,result,mask:mask.buffer},[mask.buffer]);
-      } catch(e) { emit('image-error',{id:item.id,error:errorText(e),imageMs:now()-imageStart}); }
+      } catch(e) { fail(image,e); }
       finally { bitmap?.close(); }
     }
-  } finally { await session.release(); canvas.width=1; canvas.height=1; }
+    while (inFlight.length) await settleOldest();
+  } finally { await runner.release(); canvas.width=1; canvas.height=1; }
   emit('done', {workerTotalMs:now()-started,totalTiles,completedTiles});
 }
 

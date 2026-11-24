@@ -1,7 +1,7 @@
 import { ORT_VERSION, maskPixel } from './core.js';
 import { maskPng } from './png.js';
 import { storedZip, uniqueMaskNames } from './zip.js';
-import { cpuThreadCount, prepareCpuThreads } from './threads.js';
+import { TILES_PER_SESSION, cpuSessionPlan, prepareCpuThreads } from './threads.js';
 
 const $=id=>document.getElementById(id);
 const queue=[];
@@ -35,6 +35,12 @@ try {
   if(['auto','1','2','4','8'].includes(saved))$('threads').value=saved;
 } catch { /* Use Auto without persistent storage. */ }
 
+function autoDescription() {
+  const plan=cpuSessionPlan('auto',navigator.hardwareConcurrency,navigator.deviceMemory);
+  return plan.sessions>1?`Auto uses ${plan.threads} threads. Batches of ${plan.sessions*TILES_PER_SESSION}+ tiles run ${plan.sessions} sessions of ${plan.threadsPerSession} threads on alternate tiles.`:`Auto uses ${plan.threads} threads.`;
+}
+// With parallel sessions, tiles overlap, so time per tile is image processing time divided by tiles.
+const tileTime=result=>result.timing.throughputMs??result.timing.meanMs;
 function updateThreadControls() {
   const cpu=$('backend').value==='wasm';
   $('threads').disabled=booting||busy||exporting||!cpu;
@@ -42,7 +48,7 @@ function updateThreadControls() {
   if(booting) {$('thread-info').textContent='Preparing CPU thread support…';return;}
   if(!threadingAvailable&&['2','4','8'].includes($('threads').value))$('threads').value='1';
   $('thread-info').textContent=!cpu?'CPU thread settings apply when CPU processing is selected.':threadingAvailable
-    ? `Auto uses ${cpuThreadCount('auto',navigator.hardwareConcurrency)} threads. Choose a count to compare CPU performance.`
+    ? `${autoDescription()} Choose a count to compare one session's thread scaling.`
     : 'Multiple CPU threads are unavailable in this browser; using one thread.';
 }
 $('backend').addEventListener('change',updateThreadControls);
@@ -99,7 +105,7 @@ function renderQueue() {
     const state=cell(row,item.state,item.error?'error':'');state.title=item.error||'';
     cell(row,item.result?String(item.result.tiles.length):(item.tileProgress|| (item.tileCount?String(item.tileCount):'-')),'numeric');
     cell(row,item.result?seconds(item.result.imageMs):'-','numeric');
-    cell(row,item.result?tileSeconds(item.result.timing.meanMs):'-','numeric');
+    cell(row,item.result?tileSeconds(tileTime(item.result)):'-','numeric');
     const actions=cell(row,'');actions.className='row-actions';
     if(item.result) {
       action(actions,'View',()=>showPreview(item),busy||exporting);
@@ -206,24 +212,31 @@ function finish(outcome,message) {
   $('progress-detail').textContent=`${done.length} / ${queue.length} images completed · ${batch.completedTiles} / ${batch.totalTiles} tiles processed`;
   $('total-time').textContent=seconds(batch.totalMs);
   $('image-time').textContent=done.length?seconds(done.reduce((s,q)=>s+q.result.imageMs,0)/done.length):'-';
-  $('tile-time').textContent=batch.tiles.length?tileSeconds(batch.tiles.reduce((s,t)=>s+t.totalMs,0)/batch.tiles.length):'-';
+  const tileMs=batch.sessions>1?throughputTileMs(done):meanTileMs(batch.tiles);
+  $('tile-time').textContent=tileMs===null?'-':tileSeconds(tileMs);
   $('completed').textContent=`${done.length} / ${queue.length}`;
-  const threadLabel=batch.threads?`${batch.threads} WASM thread${batch.threads===1?'':'s'}${batch.threadSetting==='auto'?' (Auto)':''}`:'WASM threads not initialized';
+  const sessionLabel=batch.sessions>1?` in ${batch.sessions} parallel sessions`:'';
+  const threadLabel=batch.threads?`${batch.threads} WASM thread${batch.threads===1?'':'s'}${sessionLabel}${batch.threadSetting==='auto'?' (Auto)':''}`:'WASM threads not initialized';
   $('setup-time').textContent=`${modeNames[batch.backend]} · FP32 · ${threadLabel} · file preparation ${seconds(batch.preflightMs||0)} · model load ${seconds(batch.modelLoadMs||0)}${batch.model?.cacheHit?' (cached)':''} · session initialization ${seconds(batch.sessionInitMs||0)}`;
   $('summary-section').hidden=false;setBusy(false);
   if(batch.threadWarning)$('thread-info').textContent=batch.threadWarning;
 }
 $('cancel').addEventListener('click',()=>finish('cancelled'));
 
+function meanTileMs(tiles) { return tiles.length?tiles.reduce((s,t)=>s+t.totalMs,0)/tiles.length:null; }
+function throughputTileMs(items) {
+  const count=items.reduce((s,q)=>s+q.result.tiles.length,0);
+  return count?items.reduce((s,q)=>s+tileTime(q.result)*q.result.tiles.length,0)/count:null;
+}
 function statsReport() {
   const {started,tiles,type,...metadata}=batch;
   const completed=queue.filter(q=>q.result);
   return {schemaVersion:1,...metadata,runtime:`onnxruntime-web ${ORT_VERSION}`,userAgent:navigator.userAgent,
     aggregate:{completedImages:completed.length,imageCount:queue.length,
       meanImageMs:completed.length?completed.reduce((s,q)=>s+q.result.imageMs,0)/completed.length:null,
-      meanTileMs:tiles.length?tiles.reduce((s,t)=>s+t.totalMs,0)/tiles.length:null},
+      meanTileMs:meanTileMs(tiles),throughputTileMs:throughputTileMs(completed)},
     tileSize:1024,maskConvention:'roots=white (1), background=black (0); 1-bit grayscale PNG',
-    timingDefinitions:{totalMs:'Batch wall time, including file preparation and model setup; excludes PNG export.',imageMs:'Image fetch/read, decode, all tile work, and foreground counting.',totalTileMs:'Pixel preparation, session.run plus output readback, and mask stitching. First tile is included; no hidden warmup.'},
+    timingDefinitions:{totalMs:'Batch wall time, including file preparation and model setup; excludes PNG export.',imageMs:'Image fetch/read, decode, all tile work, and foreground counting.',totalTileMs:'Pixel preparation, session.run plus output readback, and mask stitching. First tile is included; no hidden warmup. With parallel CPU sessions, also includes waiting for a session (waitMs).',throughputMs:'Time from an image\'s first tile preparation to its last stitch, divided by its tiles. Shown as time per tile.'},
     processedTileTimings:tiles,
     images:queue.map(({name,state,width,height,result,error})=>({name,state,width,height,result,error})),
     exports:batch.exports||[]};

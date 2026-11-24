@@ -56,7 +56,7 @@
       </dl>
       <p id="setup-time" class="small muted"></p>
       <p id="batch-export-status" class="small muted" role="status" aria-live="polite"></p>
-      <p class="small muted">Total includes file preparation, model setup and processing. Per-image time includes loading, decoding and stitching; per-tile time includes preparation, inference and stitching. PNG downloads are timed separately.</p>
+      <p class="small muted">Total includes file preparation, model setup and processing. Per-image time includes loading, decoding and stitching; per-tile time includes preparation, inference and stitching. When Auto runs parallel CPU sessions, tiles overlap, so per-tile time is image processing time divided by tiles. PNG downloads are timed separately.</p>
     </section>
 
     <section id="queue-section" aria-labelledby="queue-heading" hidden>

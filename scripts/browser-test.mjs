@@ -2,6 +2,7 @@ import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { cpuSessionPlan } from '../src/threads.js';
 
 const full=process.argv.includes('--full');
 const root=new URL('../',import.meta.url).pathname;
@@ -80,9 +81,35 @@ try {
     const stats=JSON.parse(await readFile(out+`cpu-threads-${setting}.json`,'utf8'));
     const expected=setting==='auto'?Math.min(8,Math.ceil(stats.hardwareConcurrency/2)):Number(setting);
     assert.equal(stats.threads,expected);assert.equal(stats.threadSetting,setting);
+    const plan=cpuSessionPlan(setting,stats.hardwareConcurrency,stats.deviceMemory??undefined,true,stats.totalTiles);
+    assert.equal(stats.sessions,plan.sessions);assert.equal(stats.threadsPerSession,plan.threadsPerSession);
     const mask=await readFile(await download('#queue tr:first-child button:nth-child(2)',`cpu-threads-${setting}.png`));
     assert.deepEqual(mask,cpuMask,`CPU mask changed with the ${setting} thread setting.`);
-    console.log(`CPU ${setting}: ${stats.threads} threads, ${stats.totalMs.toFixed(0)} ms`);
+    console.log(`CPU ${setting}: ${stats.threads} threads in ${stats.sessions} session(s), ${stats.totalMs.toFixed(0)} ms`);
+  }
+  // A 24-tile crop is large enough for Auto's parallel sessions; their mask must match one session.
+  let parallelMask;
+  for(const setting of ['8','auto']) {
+    await page.click('#clear');
+    await page.evaluate(async()=>{
+      const image=await createImageBitmap(await(await fetch('./test-data/2025-07-24_Box053.JPG')).blob(),{imageOrientation:'from-image',colorSpaceConversion:'none'});
+      const canvas=new OffscreenCanvas(4096,6144);canvas.getContext('2d').drawImage(image,0,0,4096,6144,0,0,4096,6144);image.close();
+      const files=new DataTransfer();files.items.add(new File([await canvas.convertToBlob()],'parallel.png',{type:'image/png'}));
+      const input=document.querySelector('#files');input.files=files.files;input.dispatchEvent(new Event('change'));
+    });
+    await page.waitForFunction(()=>document.querySelectorAll('#queue tr').length===1);
+    await page.selectOption('#threads',setting);await page.click('#run');
+    await page.waitForFunction(()=>document.querySelector('#cancel').hidden,null,{timeout:300000});
+    assert.equal(await page.locator('#status').textContent(),'Batch complete.');
+    await download('#export-stats',`cpu-parallel-${setting}.json`);
+    const stats=JSON.parse(await readFile(out+`cpu-parallel-${setting}.json`,'utf8'));
+    assert.equal(stats.totalTiles,24);
+    const plan=cpuSessionPlan(setting,stats.hardwareConcurrency,stats.deviceMemory??undefined,true,stats.totalTiles);
+    assert.equal(stats.sessions,plan.sessions);assert.equal(stats.threads,plan.threads);
+    const mask=await readFile(await download('#queue tr:first-child button:nth-child(2)',`cpu-parallel-${setting}.png`));
+    if(parallelMask)assert.deepEqual(mask,parallelMask,'CPU mask changed with parallel Auto sessions.');
+    parallelMask=mask;
+    console.log(`CPU ${setting}, 24 tiles: ${stats.threads} threads in ${stats.sessions} session(s), ${stats.totalMs.toFixed(0)} ms`);
   }
   const gpuAvailable=await page.evaluate(()=>!document.querySelector('#backend option[value="webgpu"]').disabled);
   if(gpuAvailable) {

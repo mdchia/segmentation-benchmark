@@ -4,6 +4,23 @@ export function cpuThreadCount(setting,hardwareConcurrency=1) {
   return Number(setting);
 }
 
+// One wide thread pool scales poorly on this graph. On an 8-core laptop, Auto's
+// eight threads processed tiles 11% faster as four 2-thread sessions (6% for
+// three at six threads, 2.5% for two at four). Each session holds its own
+// weights and activations (about 500 MiB), so small budgets and devices that
+// report under 8 GB keep one session. Explicit settings always use one session.
+// A 2-thread session takes about 3.5 times as long per tile, so batches need
+// about six tiles per session before the pool finishes sooner.
+export const TILES_PER_SESSION=6;
+export function cpuSessionPlan(setting,hardwareConcurrency=1,deviceMemory,threaded=true,tiles=Infinity) {
+  const threads=cpuThreadCount(setting,hardwareConcurrency);
+  const sessions=Math.floor(threads/2);
+  if(setting==='auto'&&threaded&&threads>=6&&!(deviceMemory<8)&&tiles>=sessions*TILES_PER_SESSION) {
+    return {sessions,threadsPerSession:2,threads:sessions*2};
+  }
+  return {sessions:1,threadsPerSession:threaded?threads:1,threads:threaded?threads:1};
+}
+
 export function supportsCpuThreads() {
   return globalThis.crossOriginIsolated===true&&typeof SharedArrayBuffer!=='undefined';
 }
