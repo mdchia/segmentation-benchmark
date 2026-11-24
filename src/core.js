@@ -1,5 +1,6 @@
 export const TILE = 1024;
-export const MODEL_SHA256 = 'ab9f6a97023599bf427ef9960e5fd81172fb7bca5e7a536b9eecd5246fe3125a';
+export const MODEL_FILE = 'rootfm_fp32_rgb_gather.onnx';
+export const MODEL_SHA256 = '2cf714a8043ba4cad29b59cddb00dc3cc9a683c6aa2f3fa6231d752c0761610d';
 
 export function axisStarts(size, tile = TILE) {
   if (size <= tile) return [0];

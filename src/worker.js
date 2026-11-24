@@ -1,5 +1,4 @@
-import * as ort from '../vendor/ort.webgpu.min.mjs';
-import { TILE, MODEL_SHA256, planTiles, packedLength, stitchTile, foregroundPixels, timingSummary } from './core.js';
+import { TILE, MODEL_FILE, MODEL_SHA256, planTiles, packedLength, stitchTile, foregroundPixels, timingSummary } from './core.js';
 import { cpuThreadCount, supportsCpuThreads } from './threads.js';
 
 const emit = (type, data = {}, transfer = []) => self.postMessage({ type, ...data }, transfer);
@@ -7,14 +6,14 @@ const now = () => performance.now();
 const errorText = e => e?.message || String(e);
 
 async function loadModel() {
-  const url = new URL('../models/rootfm_fp32.onnx', import.meta.url).href;
+  const url = new URL(`../models/${MODEL_FILE}`, import.meta.url).href;
   let cache;
   try { cache = await caches.open(`rootfm-${MODEL_SHA256.slice(0,12)}`); } catch { /* Storage can be unavailable in private browsing. */ }
   let response;
   try { response = await cache?.match(url); } catch { /* Fetch below remains available. */ }
   const cacheHit = Boolean(response);
   if (!response) response = await fetch(url);
-  if (!response.ok) throw new Error(`Model download failed (${response.status}). Check that models/rootfm_fp32.onnx is deployed.`);
+  if (!response.ok) throw new Error(`Model download failed (${response.status}). Check that models/${MODEL_FILE} is deployed.`);
   const cacheCopy = !cacheHit && cache ? response.clone() : null;
   const totalBytes = Number(response.headers.get('content-length')) || 0;
   const reader = response.body.getReader();
@@ -33,7 +32,7 @@ async function loadModel() {
   const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b=>b.toString(16).padStart(2,'0')).join('');
   if (digest !== MODEL_SHA256) {
     await cache?.delete(url);
-    throw new Error('The model checksum did not match. Reload and try again with the original FP32 export.');
+    throw new Error('The model checksum did not match. Reload and try again.');
   }
   let cacheStored = cacheHit;
   if (cacheCopy) {
@@ -75,17 +74,14 @@ async function run({ items, backend, threadSetting='auto' }) {
   const preflightMs=now()-started;
   if (!prepared.length) { emit('done', {preflightMs,totalTiles:0,completedTiles:0}); return; }
 
-  ort.env.wasm.wasmPaths = new URL('../vendor/', import.meta.url).href;
   const requestedThreads=backend==='wasm'?cpuThreadCount(threadSetting,navigator.hardwareConcurrency):1;
-  ort.env.wasm.numThreads=supportsCpuThreads()?requestedThreads:1;
-  ort.env.wasm.proxy = false;
   const setupStart=now();
   let gpu=null;
+  let adapter;
   if (backend==='webgpu') {
     if (!navigator.gpu) throw new Error('WebGPU is unavailable. Select CPU or use a browser with WebGPU support.');
-    const adapter=await navigator.gpu.requestAdapter({powerPreference:'high-performance'});
+    adapter=await navigator.gpu.requestAdapter({powerPreference:'high-performance'});
     if (!adapter) throw new Error('No WebGPU adapter is available. Select CPU or check browser GPU settings.');
-    ort.env.webgpu.adapter=adapter;
     const info=adapter.info || {};
     gpu={vendor:info.vendor,architecture:info.architecture,description:info.description};
   }
@@ -94,6 +90,13 @@ async function run({ items, backend, threadSetting='auto' }) {
   const modelLoadMs=now()-downloadStart;
   emit('session-loading');
   const sessionStart=now();
+  const ort=backend==='wasm'
+    ? await import('../vendor/ort.wasm.min.mjs')
+    : await import('../vendor/ort.webgpu.min.mjs');
+  ort.env.wasm.wasmPaths = new URL('../vendor/', import.meta.url).href;
+  ort.env.wasm.numThreads=supportsCpuThreads()?requestedThreads:1;
+  ort.env.wasm.proxy=false;
+  if(adapter) ort.env.webgpu.adapter=adapter;
   const session=await ort.InferenceSession.create(model.bytes, { executionProviders:[backend], graphOptimizationLevel:'all' });
   const sessionInitMs=now()-sessionStart;
   const modelInfo={sha256:MODEL_SHA256,cacheHit:model.cacheHit,cacheStored:model.cacheStored,bytes:model.loadedBytes};

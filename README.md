@@ -16,8 +16,8 @@ npm run dev
 Open the printed local URL (normally `http://localhost:5173/`). Use HTTP on
 localhost or HTTPS when hosted; opening `index.html` directly will not work.
 `npm run build` creates a self-contained `dist/` directory containing runtime
-binaries, the verified model, and the eight supplied test images. The linked
-sibling project is not required to build or run the app.
+binaries, the verified browser model, and the eight supplied test images. The
+linked sibling project is not required to build or run the app.
 Builds use content-versioned module and stylesheet paths so browser caches
 cannot mix a new page with older app code.
 
@@ -68,8 +68,13 @@ The app displays this citation and provides [a BibTeX file](models/RootFM.bib).
 - This repository includes the FP32 export copied from
   `rhizo-mobilesam-segmentation-test.local/weights/onnx/rootfm_fp32.onnx`.
   The sibling project's `scripts/onnx/export.py` describes its conversion.
-- SHA-256: `ab9f6a97023599bf427ef9960e5fd81172fb7bca5e7a536b9eecd5246fe3125a`.
-  Both the build and browser check the hash.
+- The build verifies the source export, then generates
+  `rootfm_fp32_rgb_gather.onnx`. It replaces the uint8 alpha-removal `Slice` with
+  an equivalent `Gather` of R, G and B, which ONNX Runtime 1.30 can run on WebGPU.
+  It also removes a Slice constant with no remaining consumers. The FP32
+  weights and the other operations come from the source export.
+  The build and browser verify the generated model's SHA-256
+  (`2cf714a8043ba4cad29b59cddb00dc3cc9a683c6aa2f3fa6231d752c0761610d`).
 - Input: `pixels`, uint8 RGBA `[1, 1024, 1024, 4]`. The graph ignores alpha and
   includes ImageNet normalization, prompt-free encoder/decoder inference and
   bilinear logit upsampling. Output: float32 `logits` `[1, 1024, 1024]`.
@@ -97,11 +102,11 @@ custom inputs. A native ONNX Runtime or OpenVINO application could improve CPU
 speed or device access, but would require an installed application or backend.
 
 The app pins `onnxruntime-web` 1.30.0 and serves the matching modules and WASM
-binaries from the same origin. Browser inference runs in a dedicated module
-worker. WebGPU selection requests a high-performance adapter; ONNX Runtime can
-execute unsupported graph operations on WASM. A failed WebGPU session is
-reported, so the user can explicitly choose CPU. There is no silent backend
-switch or reduced-resolution mode.
+binaries from the same origin. The dedicated inference worker loads the smaller
+WASM-only runtime for CPU runs. WebGPU selection requests a high-performance
+adapter. ONNX Runtime can execute unsupported graph operations on WASM. A
+failed WebGPU session is reported, so the user can explicitly choose CPU.
+There is no silent backend switch or reduced-resolution mode.
 
 CPU supports **Auto / 1 / 2 / 4 / 8 WASM threads** within one inference session,
 sharing the model and processing images sequentially. WebGPU uses one WASM helper
@@ -183,14 +188,24 @@ initialized thread count and mask consistency, and check the one-thread fallback
 when service workers are unavailable.
 Artifacts are written to ignored `test-results/`.
 
-Validated on 2026-11-23 with headless Chromium 156 and an NVIDIA Pascal WebGPU
-adapter: all eight full-resolution test photos completed (384 tiles) in 78.56 s,
-averaging 9.54 s per image and 0.187 s per tile. The cached model was used for
+On 2026-11-25, paired runs in Chromium 156 on an NVIDIA RTX 5060 Laptop GPU
+processed the eight full-resolution photos (384 tiles) with cached models.
+The RGB `Gather` reduced median inference time after the first tile from
+68.0 ms to 54.9 ms and reduced batch wall time from 38.75 s to 33.79 s.
+The eight exported mask PNGs matched the original graph byte for byte.
+Native FP32 also matched the first photo's mask exactly when fed the same
+Chromium-decoded tiles. Pillow decoded some RGB values differently on this
+machine, which affected the optional full-photo reference comparison.
+
+On 2026-11-23, the original graph ran in headless Chromium 156 on an NVIDIA
+Pascal WebGPU adapter. All eight full-resolution test photos (384 tiles)
+completed in 78.56 s, averaging 9.54 s per image and 0.187 s per tile.
+The cached model was used for
 that run. CPU inference on two real-photo crops (including centered padding
 and edge overlap) matched native FP32 ONNX inference with zero pixel differences.
 The first full-resolution WebGPU output differed from native FP32 by one pixel
 out of 44,761,088, adding one foreground pixel and losing none.
-These are local measurements, not performance guarantees for other devices.
+Performance varies across devices.
 
 The browser test enables GPU access flags for headless Chromium on Linux. This
 only affects automated tests; visitors use their browser's normal GPU settings.
