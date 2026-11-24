@@ -25,7 +25,7 @@ cannot mix a new page with older app code.
 
 1. Select WebGPU or CPU. WebGPU is disabled when no adapter is detected. In CPU
    mode, the second menu selects **Auto / 1 / 2 / 4 / 8 threads**. Auto uses half
-   the reported logical cores, rounded up and capped at four. Explicit settings
+   the reported logical cores, rounded up and capped at eight. Explicit settings
    are honored even when they exceed the reported core count, so testers can
    compare throughput. The preference is remembered in this browser.
 2. Choose or drop multiple images, or add the eight bundled test photos.
@@ -123,8 +123,8 @@ Failures of regular WebGPU are reported in the UI.
 
 CPU supports **Auto / 1 / 2 / 4 / 8 WASM threads** within one inference session,
 sharing the model and processing images sequentially. WebGPU uses one WASM helper
-thread and disables the CPU thread menu. More threads are not always faster;
-use per-tile and per-image timings to compare settings on each machine.
+thread and disables the CPU thread menu. Use per-tile and per-image timings to
+compare CPU settings on each machine.
 
 ONNX Runtime requires cross-origin isolation and shared memory for multiple
 WASM threads. `isolation-worker.js` adds COOP/COEP headers to same-origin app
@@ -197,10 +197,31 @@ convention. Browser checks use the deployed build under a repository subpath,
 exercise multi-file batches with real model inference, and check mask downloads,
 previews, themes, mobile layout, cancellation and recovery from an invalid image.
 They repeat a four-tile WebGPU image in fresh sessions and compare the exported
-PNGs byte for byte. They also exercise all five CPU settings with real inference, verify the
-initialized thread count and mask consistency, and check the one-thread fallback
-when service workers are unavailable.
+PNGs byte for byte. They also exercise all five CPU settings with real inference,
+verify the initialized thread count and byte-for-byte mask parity, and check the
+one-thread fallback when service workers are unavailable.
 Artifacts are written to ignored `test-results/`.
+
+### CPU thread scaling
+
+On 2026-11-25, Chromium 156 processed the full-resolution Box053 sample
+(5464 × 8192, 48 tiles) on a Ryzen 7 250 laptop. Auto increased from four to
+eight WASM threads on its eight physical cores and sixteen logical CPUs. With
+the model cached, the mean batch time fell from **48.65 s to 35.96 s (26%)**,
+and median inference after the first tile fell from **978 ms to 701 ms (28%)**.
+The timings average two fresh sessions per setting in 4 / 8 / 8 / 4 order.
+All four exported mask PNGs were byte-identical.
+
+In shorter laptop sweeps, twelve threads gave a small additional gain in some
+runs. Sixteen threads were consistently slower than eight. Each pair of SMT
+threads shares a physical core's compute resources. Auto uses the browser's
+reported logical CPU count to size the pool, with a cap of eight.
+
+On a Pixel 11 Pro, Chrome 158 reported seven logical CPUs and Auto chose four
+WASM threads in both builds. The same 48-tile photo produced identical mask PNGs
+in the phone's four- and six-thread runs. Batch time at four threads ranged from
+78 s to 145 s as the phone warmed, so the phone runs establish mask parity and
+thread selection. The laptop runs provide the speed comparison above.
 
 ### WebGPU graph replay and runtime comparison
 

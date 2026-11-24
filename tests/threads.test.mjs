@@ -2,11 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cpuThreadCount } from '../src/threads.js';
 
-test('Auto uses half the reported logical cores, rounded up and capped at four',()=>{
+test('Auto uses half the reported logical cores, rounded up and capped at eight',()=>{
   assert.equal(cpuThreadCount('auto',1),1);
   assert.equal(cpuThreadCount('auto',3),2);
+  assert.equal(cpuThreadCount('auto',7),4);
   assert.equal(cpuThreadCount('auto',8),4);
-  assert.equal(cpuThreadCount('auto',32),4);
+  assert.equal(cpuThreadCount('auto',12),6);
+  assert.equal(cpuThreadCount('auto',16),8);
+  assert.equal(cpuThreadCount('auto',32),8);
   assert.equal(cpuThreadCount('auto',undefined),1);
 });
 

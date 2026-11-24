@@ -69,6 +69,7 @@ try {
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
   await page.setViewportSize({width:1280,height:1000});
   // Every menu setting must reach a real inference session and preserve its mask.
+  const cpuMask=await readFile(out+`cpu-${crops[0].name}`);
   for(const setting of ['1','2','8','auto']) {
     await page.click('#clear');
     await page.setInputFiles('#files',{name:crops[0].name,mimeType:'image/png',buffer:Buffer.from(crops[0].bytes)});
@@ -77,9 +78,10 @@ try {
     assert.equal(await page.locator('#status').textContent(),'Batch complete.');
     await download('#export-stats',`cpu-threads-${setting}.json`);
     const stats=JSON.parse(await readFile(out+`cpu-threads-${setting}.json`,'utf8'));
-    const expected=setting==='auto'?Math.min(4,Math.ceil(stats.hardwareConcurrency/2)):Number(setting);
+    const expected=setting==='auto'?Math.min(8,Math.ceil(stats.hardwareConcurrency/2)):Number(setting);
     assert.equal(stats.threads,expected);assert.equal(stats.threadSetting,setting);
-    assert.equal(stats.images[0].result.foregroundPixels,cpuStats.images[0].result.foregroundPixels);
+    const mask=await readFile(await download('#queue tr:first-child button:nth-child(2)',`cpu-threads-${setting}.png`));
+    assert.deepEqual(mask,cpuMask,`CPU mask changed with the ${setting} thread setting.`);
     console.log(`CPU ${setting}: ${stats.threads} threads, ${stats.totalMs.toFixed(0)} ms`);
   }
   const gpuAvailable=await page.evaluate(()=>!document.querySelector('#backend option[value="webgpu"]').disabled);

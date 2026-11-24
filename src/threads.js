@@ -1,5 +1,5 @@
 export function cpuThreadCount(setting,hardwareConcurrency=1) {
-  if(setting==='auto')return Math.min(4,Math.ceil(Math.max(1,hardwareConcurrency||1)/2));
+  if(setting==='auto')return Math.min(8,Math.ceil(Math.max(1,hardwareConcurrency||1)/2));
   if(!['1','2','4','8'].includes(String(setting)))throw new Error('Invalid CPU thread setting.');
   return Number(setting);
 }
