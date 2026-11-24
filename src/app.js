@@ -1,4 +1,4 @@
-import { maskPixel } from './core.js';
+import { ORT_VERSION, maskPixel } from './core.js';
 import { maskPng } from './png.js';
 import { storedZip, uniqueMaskNames } from './zip.js';
 import { cpuThreadCount, prepareCpuThreads } from './threads.js';
@@ -167,6 +167,9 @@ function handleMessage(data) {
       progress(data.loadedBytes,data.totalBytes);break;
     case 'session-loading':
       $('status').textContent=`Initializing ${modeNames[batch.backend]}…`;$('progress-detail').textContent='Creating inference session';progress(0,0);break;
+    case 'gpu-mode':
+      if (batch.gpu) Object.assign(batch.gpu,data.gpu);
+      break;
     case 'started':
       Object.assign(batch,data);batch.tiles=[];progress(0,data.totalTiles);
       if(data.threadWarning)$('thread-info').textContent=data.threadWarning;
@@ -215,7 +218,7 @@ $('cancel').addEventListener('click',()=>finish('cancelled'));
 function statsReport() {
   const {started,tiles,type,...metadata}=batch;
   const completed=queue.filter(q=>q.result);
-  return {schemaVersion:1,...metadata,runtime:'onnxruntime-web 1.30.0',userAgent:navigator.userAgent,
+  return {schemaVersion:1,...metadata,runtime:`onnxruntime-web ${ORT_VERSION}`,userAgent:navigator.userAgent,
     aggregate:{completedImages:completed.length,imageCount:queue.length,
       meanImageMs:completed.length?completed.reduce((s,q)=>s+q.result.imageMs,0)/completed.length:null,
       meanTileMs:tiles.length?tiles.reduce((s,t)=>s+t.totalMs,0)/tiles.length:null},

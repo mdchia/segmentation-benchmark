@@ -99,6 +99,18 @@ try {
     await page.waitForFunction(()=>document.querySelector('#preview').width>1);
     await page.screenshot({path:out+'gpu-result.png',fullPage:true});
     console.log('WebGPU:',await page.locator('#completed').textContent(),await page.locator('#total-time').textContent());
+    // Recreate the worker and session each time to catch changes during weight upload.
+    await page.click('#clear');
+    await page.setInputFiles('#files',{name:crops[1].name,mimeType:'image/png',buffer:Buffer.from(crops[1].bytes)});
+    let previous;
+    for(let i=0;i<2;i++) {
+      await page.click('#run');
+      await page.waitForFunction(()=>document.querySelector('#cancel').hidden,null,{timeout:180000});
+      assert.equal(await page.locator('#status').textContent(),'Batch complete.');
+      const mask=await readFile(await download('#queue tr:first-child button:nth-child(2)','gpu-repeat-edges.png'));
+      if(previous) assert.deepEqual(mask,previous,'WebGPU edge-crop mask changed between sessions.');
+      previous=mask;
+    }
   } else console.log('WebGPU unavailable in this test browser; GPU inference not tested.');
   await page.click('#clear');await page.click('#samples');
   await page.waitForFunction(()=>document.querySelectorAll('#queue tr').length===8);

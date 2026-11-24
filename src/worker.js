@@ -1,11 +1,12 @@
-import { TILE, MODEL_FILE, MODEL_SHA256, planTiles, packedLength, stitchTile, foregroundPixels, timingSummary } from './core.js';
+import { ORT_VERSION, TILE, MODEL_FILE, MODEL_SHA256, planTiles, packedLength, stitchTile, foregroundPixels, timingSummary } from './core.js';
 import { cpuThreadCount, supportsCpuThreads } from './threads.js';
+import { createTileSession } from './tile-session.js';
 
 const emit = (type, data = {}, transfer = []) => self.postMessage({ type, ...data }, transfer);
 const now = () => performance.now();
 const errorText = e => e?.message || String(e);
 
-async function loadModel() {
+async function loadModel(reportProgress = true) {
   const url = new URL(`../models/${MODEL_FILE}`, import.meta.url).href;
   let cache;
   try { cache = await caches.open(`rootfm-${MODEL_SHA256.slice(0,12)}`); } catch { /* Storage can be unavailable in private browsing. */ }
@@ -23,7 +24,7 @@ async function loadModel() {
     const { value, done } = await reader.read();
     if (done) break;
     parts.push(value); loadedBytes += value.length;
-    emit('model-progress', { loadedBytes, totalBytes, cacheHit });
+    if (reportProgress) emit('model-progress', { loadedBytes, totalBytes, cacheHit });
   }
   const bytes = new Uint8Array(loadedBytes);
   let offset = 0;
@@ -90,14 +91,20 @@ async function run({ items, backend, threadSetting='auto' }) {
   const modelLoadMs=now()-downloadStart;
   emit('session-loading');
   const sessionStart=now();
-  const ort=backend==='wasm'
-    ? await import('../vendor/ort.wasm.min.mjs')
-    : await import('../vendor/ort.webgpu.min.mjs');
-  ort.env.wasm.wasmPaths = new URL('../vendor/', import.meta.url).href;
+  const vendor=new URL(`../vendor-${ORT_VERSION}/`,import.meta.url);
+  let runtimeModule='ort.wasm.min.mjs';
+  if (backend==='webgpu') runtimeModule='Suspending' in WebAssembly?'ort.jspi.min.mjs':'ort.webgpu.min.mjs';
+  const ort=await import(new URL(runtimeModule,vendor).href);
+  ort.env.wasm.wasmPaths=vendor.href;
   ort.env.wasm.numThreads=supportsCpuThreads()?requestedThreads:1;
   ort.env.wasm.proxy=false;
   if(adapter) ort.env.webgpu.adapter=adapter;
-  const session=await ort.InferenceSession.create(model.bytes, { executionProviders:[backend], graphOptimizationLevel:'all' });
+  const session=await createTileSession(ort,model.bytes,backend,async()=>(await loadModel(false)).bytes,error=>{
+    gpu.graphCapture=false;
+    gpu.graphCaptureFallback=errorText(error);
+    emit('gpu-mode',{gpu});
+  });
+  if (gpu) gpu.graphCapture=session.graphCapture;
   const sessionInitMs=now()-sessionStart;
   const modelInfo={sha256:MODEL_SHA256,cacheHit:model.cacheHit,cacheStored:model.cacheStored,bytes:model.loadedBytes};
   model=null;
@@ -109,6 +116,8 @@ async function run({ items, backend, threadSetting='auto' }) {
   const canvas=new OffscreenCanvas(TILE,TILE);
   const ctx=canvas.getContext('2d',{willReadFrequently:true});
   if (!ctx) throw new Error('Could not allocate the tile canvas.');
+  // Tile crops use integer coordinates and copy pixels at their original size.
+  ctx.imageSmoothingEnabled=false;
   let completedTiles=0;
   try {
     for (const item of prepared) {
@@ -131,22 +140,11 @@ async function run({ items, backend, threadSetting='auto' }) {
           const w=Math.min(TILE-dx,item.width-sx), h=Math.min(TILE-dy,item.height-sy);
           ctx.drawImage(bitmap,sx,sy,w,h,dx,dy,w,h);
           const rgba=ctx.getImageData(0,0,TILE,TILE).data;
-          const input=new ort.Tensor('uint8',new Uint8Array(rgba.buffer),[1,TILE,TILE,4]);
           const prepMs=now()-tileStart;
           const inferenceStart=now();
-          let outputs;
-          let inferenceMs;
-          try {
-            outputs=await session.run({pixels:input});
-            const output=outputs.logits;
-            if (!output || output.dims.join(',')!=='1,1024,1024' || output.type!=='float32') throw new Error('Unexpected model output. Expected float32 logits [1,1024,1024].');
-            const logits=await output.getData();
-            inferenceMs=now()-inferenceStart;
-            stitchTile(mask,logits,item.plan,coord);
-          } finally {
-            input.dispose();
-            if (outputs) for(const tensor of Object.values(outputs)) tensor.dispose();
-          }
+          const logits=await session.run(new Uint8Array(rgba.buffer,rgba.byteOffset,rgba.byteLength));
+          const inferenceMs=now()-inferenceStart;
+          stitchTile(mask,logits,item.plan,coord);
           const totalMs=now()-tileStart;
           const timing={index:tiles.length+1,x:coord.x,y:coord.y,prepMs,inferenceMs,stitchMs:totalMs-prepMs-inferenceMs,totalMs};
           tiles.push(timing); completedTiles++;

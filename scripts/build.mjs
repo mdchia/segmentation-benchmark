@@ -1,7 +1,7 @@
 import { cp, mkdir, rm, writeFile, readdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { MODEL_FILE, MODEL_SHA256 } from '../src/core.js';
+import { ORT_VERSION, MODEL_FILE, MODEL_SHA256 } from '../src/core.js';
 import { optimizeModel } from './optimize-model.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
@@ -31,13 +31,16 @@ await writeFile(new URL(stylesheet,dist),css);
 const html=(await readFile(new URL('../index.html',import.meta.url),'utf8'))
   .replace('./src/app.js',`./${sourceDirectory}/app.js`).replace('./styles.css',`./${stylesheet}`);
 await writeFile(new URL('index.html',dist),html);
-await mkdir(new URL('vendor/',dist));
-for(const name of ['ort.webgpu.min.mjs','ort.wasm.min.mjs',
+const runtimePackage=JSON.parse(await readFile(new URL('../node_modules/onnxruntime-web/package.json',import.meta.url),'utf8'));
+if(runtimePackage.version!==ORT_VERSION) throw new Error('Installed ONNX Runtime does not match the app version.');
+const vendor=new URL(`vendor-${ORT_VERSION}/`,dist);
+await mkdir(vendor);
+for(const name of ['ort.webgpu.min.mjs','ort.jspi.min.mjs','ort.wasm.min.mjs',
   'ort-wasm-simd-threaded.mjs','ort-wasm-simd-threaded.wasm',
   'ort-wasm-simd-threaded.jsep.mjs','ort-wasm-simd-threaded.jsep.wasm',
   'ort-wasm-simd-threaded.asyncify.mjs','ort-wasm-simd-threaded.asyncify.wasm',
   'ort-wasm-simd-threaded.jspi.mjs','ort-wasm-simd-threaded.jspi.wasm']) {
-  await cp(new URL(`../node_modules/onnxruntime-web/dist/${name}`,import.meta.url),new URL(`vendor/${name}`,dist));
+  await cp(new URL(`../node_modules/onnxruntime-web/dist/${name}`,import.meta.url),new URL(name,vendor));
 }
 await mkdir(new URL('test-data/',dist));
 const samples=[];

@@ -1,3 +1,4 @@
+export const ORT_VERSION = '1.33.0-dev.20261112-74f861c52';
 export const TILE = 1024;
 export const MODEL_FILE = 'rootfm_fp32_rgb_gather.onnx';
 export const MODEL_SHA256 = '2cf714a8043ba4cad29b59cddb00dc3cc9a683c6aa2f3fa6231d752c0761610d';

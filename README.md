@@ -101,12 +101,25 @@ Runtime and would add a model/pipeline wrapper without simplifying this graph's
 custom inputs. A native ONNX Runtime or OpenVINO application could improve CPU
 speed or device access, but would require an installed application or backend.
 
-The app pins `onnxruntime-web` 1.30.0 and serves the matching modules and WASM
-binaries from the same origin. The dedicated inference worker loads the smaller
-WASM-only runtime for CPU runs. WebGPU selection requests a high-performance
-adapter. ONNX Runtime can execute unsupported graph operations on WASM. A
-failed WebGPU session is reported, so the user can explicitly choose CPU.
-There is no silent backend switch or reduced-resolution mode.
+The app pins the ONNX Runtime Web prerelease
+`1.33.0-dev.20261112-74f861c52` and serves its modules and WASM binaries from
+a versioned directory on the same origin. Repeated sessions on the RTX 5060
+Laptop GPU sometimes produced different masks with 1.30.0 and 1.31.1.
+On 1.31.1, a projection weight buffer on the GPU differed between sessions
+even though the uploaded source bytes matched. The pinned build uses queue
+writes for smaller parameter uploads and reproduced the same masks in repeated
+full batches. CPU runs use the smaller WASM-only runtime. WebGPU uses the
+JavaScript Promise Integration (JSPI) build when the browser supports it and
+the Asyncify build otherwise.
+
+The worker requests a high-performance adapter and tells ONNX Runtime that
+the model's batch dimension is always one. It uploads each tile to the same
+4 MiB GPU buffer, allowing ONNX Runtime to capture and replay the graph.
+The runtime manages the output buffer and reads back FP32 logits for stitching.
+The tile canvas also skips smoothing for its one-to-one pixel copies. If an
+adapter rejects graph capture, the worker retries on regular WebGPU. The JSON
+records `gpu.graphCapture` and the fallback reason when one is available.
+Failures of regular WebGPU are reported in the UI.
 
 CPU supports **Auto / 1 / 2 / 4 / 8 WASM threads** within one inference session,
 sharing the model and processing images sequentially. WebGPU uses one WASM helper
@@ -140,7 +153,7 @@ All durations are measured with `performance.now()` and exported in milliseconds
 | Total wall time | File preparation, model download/cache read and verification, session initialization, all images and worker completion |
 | Per-image time | Image fetch/read, decode, tile preparation, inference/readback, stitching, and foreground counting |
 | Per-tile time | Pixel preparation, inference/readback, and stitching |
-| Inference time | `session.run` and fetching output tensor data |
+| Inference time | Input tensor binding or upload, `session.run`, and output readback |
 | Export time | PNG encoding and creation of a PNG or batch ZIP download; recorded separately |
 
 The first tile is included in all means. No hidden warmup runs are performed.
@@ -183,10 +196,39 @@ logit thresholding, packed mask boundaries, timing summaries and PNG pixel
 convention. Browser checks use the deployed build under a repository subpath,
 exercise multi-file batches with real model inference, and check mask downloads,
 previews, themes, mobile layout, cancellation and recovery from an invalid image.
-They also exercise all five CPU settings with real inference, verify the
+They repeat a four-tile WebGPU image in fresh sessions and compare the exported
+PNGs byte for byte. They also exercise all five CPU settings with real inference, verify the
 initialized thread count and mask consistency, and check the one-thread fallback
 when service workers are unavailable.
 Artifacts are written to ignored `test-results/`.
+
+### WebGPU graph replay and runtime comparison
+
+On 2026-11-25, we compared the pinned runtime and graph replay with the
+previous RGB Gather build (`1031c3a`). Both builds used the same verified
+FP32 model, original-resolution photos and tile order. The table shows
+model-cached runs. Steady inference is the median across all tiles after the
+first and includes GPU upload and output readback.
+
+| Device and workload | Previous wall time | Updated wall time | Previous steady inference | Updated steady inference |
+| --- | ---: | ---: | ---: | ---: |
+| RTX 5060 Laptop GPU, Chromium 156, all eight photos (384 tiles) | 33.81 s | 25.23 s | 54.39 ms | 38.53 ms |
+| Pixel 11 Pro, Android 17, Chrome 158, Box053 (48 tiles) | 136.39 s | 87.23-87.72 s | 2.453 s | 1.502 s |
+
+The laptop also finished the model-cache miss in 25.45 s, down from 34.39 s.
+The phone ran the updated build twice with the previous build between those
+runs. Earlier cached baseline runs on the phone ranged from 122.55 to 136.63 s.
+
+Three updated laptop batches produced identical PNGs. One of 358,088,704
+output pixels differed from the previous build, in Box057. Both updated
+phone runs also produced identical PNGs. One of 44,761,088 pixels differed
+from the previous build, in Box053. Both differences changed a root pixel to
+background. With the same decoded input bytes, the original native FP32 model
+gave logits of +0.00000215 for the laptop pixel and +0.00000328 for the phone
+pixel, both just above the zero threshold. The CPU edge-crop PNG matched
+across both versions on both devices.
+
+### Earlier measurements
 
 On 2026-11-25, paired runs in Chromium 156 on an NVIDIA RTX 5060 Laptop GPU
 processed the eight full-resolution photos (384 tiles) with cached models.
